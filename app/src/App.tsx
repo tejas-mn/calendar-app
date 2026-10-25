@@ -977,10 +977,6 @@ export default function App() {
           />
         </label>
       </section>
-      <footer>
-        Edits save automatically in this browser. Use Backup to save a portable
-        copy.
-      </footer>
       {upcomingOpen && (
         <div
           className="backdrop"
