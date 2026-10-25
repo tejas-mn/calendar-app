@@ -10,6 +10,10 @@
   padding-left: 12px;
 }
 
+.mobile-nav-toggle {
+  display: none;
+}
+
 .planner-nav > button,
 .planner-nav > .button {
   position: relative;
@@ -722,6 +726,7 @@
   }
 
   .planner-nav {
+    display: none;
     order: 3;
     width: 100%;
     margin-left: 0;
@@ -730,6 +735,38 @@
     border-left: 0;
     padding: 6px 0 0;
     scrollbar-width: none;
+  }
+
+  .mobile-nav-toggle {
+    display: block;
+    order: 2;
+    margin-left: 6px;
+    border: 1px solid #e5e7ee;
+    border-radius: 6px;
+    padding: 7px 10px;
+    background: transparent;
+    color: #697184;
+    font: 600 9px/1.2 "DM Sans", sans-serif;
+  }
+
+  .mobile-nav-toggle:hover,
+  .mobile-nav-toggle[aria-expanded="true"] {
+    background: #eef0f6;
+    color: #49368d;
+  }
+
+  .planner-nav.mobile-open {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+    position: relative;
+    z-index: 20;
+    border: 1px solid #e5e7ee;
+    border-radius: 8px;
+    padding: 4px;
+    background: #f8f9fb;
+    box-shadow: 0 12px 28px #1c23382b;
   }
 
   .planner-nav::-webkit-scrollbar {
@@ -741,6 +778,54 @@
     flex: 0 0 auto;
     padding: 6px 7px !important;
     font-size: 8px;
+  }
+
+  .planner-nav.mobile-open > button,
+  .planner-nav.mobile-open > .button {
+    width: 100%;
+    padding: 10px 11px !important;
+    background: #f8f9fb !important;
+    text-align: left;
+    font-size: 10px;
+  }
+
+  .planner-nav.mobile-open > button + button,
+  .planner-nav.mobile-open > button + .button,
+  .planner-nav.mobile-open > .button + button {
+    border-top: 1px solid #e5e7ee !important;
+  }
+
+  .planner-nav.mobile-open > button::after,
+  .planner-nav.mobile-open > .button::after {
+    display: none;
+  }
+
+  .shell.dark .mobile-nav-toggle {
+    border-color: #343c4c;
+    color: #c5cada;
+  }
+
+  .shell.dark .mobile-nav-toggle:hover,
+  .shell.dark .mobile-nav-toggle[aria-expanded="true"] {
+    background: #272e3c;
+    color: #e4e8f0;
+  }
+
+  .shell.dark .planner-nav.mobile-open {
+    border-color: #343c4c;
+    background: #202632;
+    box-shadow: 0 12px 28px #00000055;
+  }
+
+  .shell.dark .planner-nav.mobile-open > button,
+  .shell.dark .planner-nav.mobile-open > .button {
+    background: #202632 !important;
+  }
+
+  .shell.dark .planner-nav.mobile-open > button + button,
+  .shell.dark .planner-nav.mobile-open > button + .button,
+  .shell.dark .planner-nav.mobile-open > .button + button {
+    border-color: #343c4c !important;
   }
 
   .goal {

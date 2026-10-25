@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { ChangeEvent } from "react";
 
 type PlannerHeaderProps = {
@@ -29,6 +30,8 @@ export function PlannerHeader({
   onOpenSearch,
   onOpenSettings,
 }: PlannerHeaderProps) {
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
   return (
     <header className="topbar planner-header">
       <div className="logo">{String(year).slice(-2)}</div>
@@ -46,7 +49,24 @@ export function PlannerHeader({
           ))}
         </select>
       </label>
-      <nav className="actions planner-nav" aria-label="Planner actions">
+      <button
+        type="button"
+        className="mobile-nav-toggle"
+        aria-expanded={mobileNavOpen}
+        aria-controls="planner-actions"
+        onClick={() => setMobileNavOpen((open) => !open)}
+      >
+        {mobileNavOpen ? "Close" : "Menu"}
+      </button>
+      <nav
+        id="planner-actions"
+        className={"actions planner-nav" + (mobileNavOpen ? " mobile-open" : "")}
+        aria-label="Planner actions"
+        onClick={(event) => {
+          if ((event.target as HTMLElement).closest("button, .button"))
+            setMobileNavOpen(false);
+        }}
+      >
         <button onClick={onExport}>Export CSV</button>
         <button onClick={onBackup}>Backup</button>
         <label className="button">
