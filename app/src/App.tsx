@@ -1,12 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { CalendarTable } from "./components/CalendarTable";
+import { PlannerHeader } from "./components/PlannerHeader";
+import { CalendarViewControls } from "./components/CalendarViewControls";
+import { TaskItem } from "./components/TaskItem";
+import {
+  dateKey,
+  formatDate,
+  makePeriods,
+  makeWeeks,
+  parseDate,
+  periodEnd,
+  periodStart,
+  weekKey,
+} from "./types";
+import type {
+  CalendarView,
+  PlanningCycle,
+  SprintDefinition,
+} from "./types";
 
-type P = {
-  id: string;
-  start: number;
-  end: number;
-  label: string;
-  tone: string;
-};
 type W = { plan?: string; [key: string]: string | undefined };
 type WeeklyReview = { wins?: string; blockers?: string; priorities?: string };
 type S = {
@@ -17,6 +29,8 @@ type S = {
   completed: Record<string, boolean>;
   tasks: Record<string, DayTask[]>;
   reviews: Record<string, WeeklyReview>;
+  cycles: Record<string, PlanningCycle>;
+  sprints: Record<string, SprintDefinition>;
 };
 type TaskPriority = "low" | "medium" | "high";
 type TaskRepeat = "none" | "weekly" | "weekdays";
@@ -25,25 +39,24 @@ type DayTask = {
   id: string;
   text: string;
   done: boolean;
+  category?: string;
+  parentId?: string;
+  startDate?: string;
+  endDate?: string;
+  startTime?: string;
+  endTime?: string;
   priority?: TaskPriority;
   repeat?: Exclude<TaskRepeat, "none">;
   seriesId?: string;
 };
-type CWeek = { n: number; days: Date[] };
 type Tracker = { id: string; label: string; tone: string; color: string };
-function makePeriods(year: number): P[] {
-  const yy =
-    year >= 2000 && year < 2100 ? String(year).slice(-2) : String(year);
-  return [
-    { id: yy + ".1", start: 0, end: 3, label: "Jan – Apr", tone: "violet" },
-    { id: yy + ".2", start: 4, end: 7, label: "May – Aug", tone: "blue" },
-    { id: yy + ".3", start: 8, end: 11, label: "Sep – Dec", tone: "green" },
-  ];
-}
 const storeKey = "calendar-planner-2027-v1";
 const widthKey = "calendar-planner-2027-column-widths";
 const themeKey = "calendar-planner-2027-theme",
   yearKey = "calendar-planner-selected-year";
+const viewKey = "calendar-planner-view-v2";
+const rangeStartKey = "calendar-planner-range-start";
+const rangeEndKey = "calendar-planner-range-end";
 const trackerKey = "calendar-planner-2027-trackers",
   sprintKey = "calendar-planner-2027-sprint-length";
 const trackerColors = [
@@ -152,14 +165,11 @@ const empty: S = {
   completed: {},
   tasks: {},
   reviews: {},
+  cycles: {},
+  sprints: {},
 };
-const dkey = (d: Date) =>
-  [
-    d.getFullYear(),
-    String(d.getMonth() + 1).padStart(2, "0"),
-    String(d.getDate()).padStart(2, "0"),
-  ].join("-");
-const wkey = (p: string, n: number) => p + "-W" + n;
+const dkey = (date: Date | null) => dateKey(date || new Date());
+const wkey = weekKey;
 const load = (): S => {
   try {
     const x = JSON.parse(localStorage.getItem(storeKey) || "null");
@@ -168,24 +178,7 @@ const load = (): S => {
     return empty;
   }
 };
-const fmt = (d: Date) =>
-  new Intl.DateTimeFormat("en", { day: "2-digit", month: "short" }).format(d);
-function makeWeeks(p: P, year: number): CWeek[] {
-  const a = new Date(year, p.start, 1);
-  a.setDate(a.getDate() - a.getDay());
-  const b = new Date(year, p.end + 1, 0);
-  b.setDate(b.getDate() + 6 - b.getDay());
-  const out: CWeek[] = [];
-  for (let c = new Date(a); c <= b; c.setDate(c.getDate() + 7))
-    out.push({
-      n: out.length + 1,
-      days: Array.from(
-        { length: 7 },
-        (_, i) => new Date(c.getFullYear(), c.getMonth(), c.getDate() + i),
-      ),
-    });
-  return out;
-}
+const fmt = formatDate;
 function saveFile(name: string, data: string, type: string) {
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([data], { type }));
@@ -215,9 +208,26 @@ export default function App() {
     [dashboardOpen, setDashboardOpen] = useState(false),
     [yearSearchOpen, setYearSearchOpen] = useState(false),
     [yearSearch, setYearSearch] = useState(""),
+    [view, setView] = useState<CalendarView>(
+      () => (localStorage.getItem(viewKey) as CalendarView) || "sprint",
+    ),
+    [rangeStart, setRangeStart] = useState(
+      () => localStorage.getItem(rangeStartKey) || "",
+    ),
+    [rangeEnd, setRangeEnd] = useState(
+      () => localStorage.getItem(rangeEndKey) || "",
+    ),
     [newTaskText, setNewTaskText] = useState(""),
     [newTaskPriority, setNewTaskPriority] = useState<TaskPriority>("medium"),
     [newTaskRepeat, setNewTaskRepeat] = useState<TaskRepeat>("none"),
+    [newTaskCategory, setNewTaskCategory] = useState(""),
+    [newTaskStartTime, setNewTaskStartTime] = useState(""),
+    [newTaskEndTime, setNewTaskEndTime] = useState(""),
+    [newTaskParentId, setNewTaskParentId] = useState(""),
+    [taskFormOpen, setTaskFormOpen] = useState(false),
+    [expandedTaskId, setExpandedTaskId] = useState<string | null>(null),
+    [newTaskStartDate, setNewTaskStartDate] = useState(""),
+    [newTaskEndDate, setNewTaskEndDate] = useState(""),
     [reviewWeek, setReviewWeek] = useState<{
       periodId: string;
       week: number;
@@ -235,17 +245,16 @@ export default function App() {
       );
     });
   const tableWrap = useRef<HTMLDivElement>(null);
-  const periods = useMemo(() => makePeriods(year), [year]);
+  const periods = useMemo(
+    () =>
+      makePeriods(year).map((period) => data.cycles[period.id] || period),
+    [data.cycles, year],
+  );
   const p = periods.find((x) => x.id === periodId) || periods[0];
   const weeks = useMemo(() => makeWeeks(p, year), [p, year]);
   const periodDays = weeks
     .flatMap((w) => w.days)
-    .filter(
-      (d) =>
-        d.getFullYear() === year &&
-        d.getMonth() >= p.start &&
-        d.getMonth() <= p.end,
-    );
+    .filter((d) => d >= periodStart(p, year) && d <= periodEnd(p, year));
   const upcomingTasks = useMemo(
     () =>
       Object.entries(data.tasks)
@@ -313,10 +322,11 @@ export default function App() {
           tasksComplete = 0;
         for (let date = 1; date <= dayCount; date++) {
           const key = dkey(new Date(year, month, date));
-          if (data.completed[key]) daysComplete++;
           const tasks = (data.tasks[key] || []).filter((task) =>
             task.text.trim(),
           );
+          if (data.completed[key] || tasks.some((task) => task.done))
+            daysComplete++;
           taskCount += tasks.length;
           tasksComplete += tasks.filter((task) => task.done).length;
         }
@@ -451,10 +461,18 @@ export default function App() {
   }, [sprintLength]);
   useEffect(() => {
     localStorage.setItem(themeKey, dark ? "dark" : "light");
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
   }, [dark]);
   useEffect(() => {
     localStorage.setItem(yearKey, String(year));
   }, [year]);
+  useEffect(() => {
+    localStorage.setItem(viewKey, view);
+  }, [view]);
+  useEffect(() => {
+    localStorage.setItem(rangeStartKey, rangeStart);
+    localStorage.setItem(rangeEndKey, rangeEnd);
+  }, [rangeStart, rangeEnd]);
   useEffect(() => {
     const fit = () =>
       setWidths((current) =>
@@ -479,6 +497,10 @@ export default function App() {
   const daily = (date: Date, value: string) => {
     const k = dkey(date);
     setData((x) => ({ ...x, days: { ...x.days, [k]: value } }));
+  };
+  const closeDay = () => {
+    setDay(null);
+    setExpandedTaskId(null);
   };
   const addTasksForDay = (date: Date) => {
     const text = newTaskText.trim();
@@ -513,6 +535,14 @@ export default function App() {
             text,
             done: false,
             priority: newTaskPriority,
+            ...(newTaskCategory.trim()
+              ? { category: newTaskCategory.trim() }
+              : {}),
+            ...(newTaskStartTime ? { startTime: newTaskStartTime } : {}),
+            ...(newTaskEndTime ? { endTime: newTaskEndTime } : {}),
+            ...(newTaskParentId ? { parentId: newTaskParentId } : {}),
+            startDate: newTaskStartDate || dkey(date),
+            endDate: newTaskEndDate || dkey(date),
             ...(newTaskRepeat === "none" ? {} : { repeat: newTaskRepeat }),
           },
         ];
@@ -520,9 +550,39 @@ export default function App() {
       return { ...x, tasks };
     });
     setNewTaskText("");
+    setNewTaskCategory("");
+    setNewTaskStartTime("");
+    setNewTaskEndTime("");
+    setNewTaskParentId("");
+    setNewTaskStartDate("");
+    setNewTaskEndDate("");
+    setTaskFormOpen(false);
   };
   const query = search.toLowerCase().trim();
-  const visible = weeks.filter(
+  const currentWeek = weeks.find((week) =>
+    week.days.some((date) => dkey(date) === todayKey),
+  );
+  const currentSprintStart = currentWeek
+    ? Math.floor((currentWeek.n - 1) / sprintLength) * sprintLength + 1
+    : 1;
+  const rangeDates =
+    rangeStart && rangeEnd
+      ? { start: parseDate(rangeStart), end: parseDate(rangeEnd) }
+      : null;
+  const viewWeeks = weeks.filter((week) => {
+    if (view === "today") return week === currentWeek;
+    if (view === "sprint")
+      return (
+        Math.floor((week.n - 1) / sprintLength) ===
+        Math.floor((currentSprintStart - 1) / sprintLength)
+      );
+    if (view === "range" && rangeDates)
+      return week.days.some(
+        (date) => date >= rangeDates.start && date <= rangeDates.end,
+      );
+    return true;
+  });
+  const visible = viewWeeks.filter(
     (w) =>
       !query ||
       [
@@ -662,7 +722,6 @@ export default function App() {
     }
     e.target.value = "";
   };
-  const columns = trackers;
   const addTracker = () => {
     const id = "tracker-" + Date.now();
     setTrackers((x) => [
@@ -689,6 +748,42 @@ export default function App() {
       [next[index + 9], next[to + 9]] = [next[to + 9], next[index + 9]];
       return next;
     });
+  };
+  const updateCycle = (cycle: PlanningCycle, patch: Partial<PlanningCycle>) => {
+    setData((current) => ({
+      ...current,
+      cycles: {
+        ...current.cycles,
+        [cycle.id]: { ...cycle, ...patch },
+      },
+    }));
+  };
+  const sprintGroups = Array.from(
+    { length: Math.ceil(weeks.length / sprintLength) },
+    (_, index) => {
+      const startWeek = index * sprintLength + 1;
+      const id = p.id + "-S" + startWeek;
+      return {
+        id,
+        startWeek,
+        endWeek: Math.min(startWeek + sprintLength - 1, weeks.length),
+        definition: data.sprints[id],
+      };
+    },
+  );
+  const updateSprint = (id: string, patch: Partial<SprintDefinition>) => {
+    setData((current) => ({
+      ...current,
+      sprints: {
+        ...current.sprints,
+        [id]: {
+          ...current.sprints[id],
+          id,
+          title: current.sprints[id]?.title || "",
+          ...patch,
+        },
+      },
+    }));
   };
   const resizeHandle = (index: number) => (
     <span
@@ -717,75 +812,51 @@ export default function App() {
       }}
     />
   );
+  const jumpToToday = () => {
+    const today = new Date();
+    const todayYear = today.getFullYear();
+    const todayCycle = makePeriods(todayYear).find(
+      (period) => today.getMonth() >= period.start && today.getMonth() <= period.end,
+    );
+    setYear(todayYear);
+    setPeriodId(todayCycle?.id || makePeriods(todayYear)[0].id);
+    setView("today");
+    window.setTimeout(() => {
+      document
+        .getElementById("week-" + (todayCycle?.id || "") + "-1")
+        ?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 50);
+  };
   return (
     <main className={"shell" + (dark ? " dark" : "")}>
-      <header className="topbar">
-        <div className="logo">{String(year).slice(-2)}</div>
-        <div>
-          <small>PERSONAL PLANNER</small>
-          <h1>{year} Calendar</h1>
-        </div>
-        <label className="year-picker">
-          <span>YEAR</span>
-          <select
-            value={year}
-            onChange={(e) => {
-              const next = Number(e.target.value);
-              setYear(next);
-              setPeriodId(makePeriods(next)[0].id);
-              setSearch("");
-              setDay(null);
-            }}
-          >
-            {Array.from({ length: 201 }, (_, i) => 2100 - i).map((y) => (
-              <option key={y} value={y}>
-                {y}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="actions">
-          <button onClick={exportCsv}>Export CSV</button>
-          <button
-            onClick={() =>
-              saveFile(
-                year + "-calendar-backup.json",
-                JSON.stringify(data, null, 2),
-                "application/json",
-              )
-            }
-          >
-            Backup
-          </button>
-          <label className="button">
-            Restore
-            <input
-              type="file"
-              accept=".json,application/json"
-              onChange={restore}
-            />
-          </label>
-          <button onClick={() => window.print()}>Print</button>
-          <button
-            onClick={() => setDark((x) => !x)}
-            aria-label={dark ? "Switch to light theme" : "Switch to dark theme"}
-          >
-            {dark ? "Light theme" : "Dark theme"}
-          </button>
-          <button onClick={() => setUpcomingOpen(true)}>
-            Tasks ({upcomingTasks.length})
-          </button>
-          <button onClick={() => setDashboardOpen(true)}>Progress</button>
-          <button onClick={() => setYearSearchOpen(true)}>Search year</button>
-          <button onClick={() => setSettingsOpen(true)}>
-            Planner settings
-          </button>
-        </div>
-      </header>
+      <PlannerHeader
+        year={year}
+        dark={dark}
+        taskCount={upcomingTasks.length}
+        onYearChange={(next) => {
+          setYear(next);
+          setPeriodId(makePeriods(next)[0].id);
+          setSearch("");
+          setDay(null);
+        }}
+        onExport={exportCsv}
+        onBackup={() =>
+          saveFile(
+            year + "-calendar-backup.json",
+            JSON.stringify(data, null, 2),
+            "application/json",
+          )
+        }
+        onRestore={restore}
+        onToggleTheme={() => setDark((current) => !current)}
+        onOpenTasks={() => setUpcomingOpen(true)}
+        onOpenProgress={() => setDashboardOpen(true)}
+        onOpenSearch={() => setYearSearchOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
       <section className="intro">
         <div>
           <small>YEAR PLAN · SAVES ON THIS DEVICE</small>
-          <h2>Make room for what matters.</h2>
           <p>
             A weekly view for goals, applications, practice, health, and the
             work in between.
@@ -839,14 +910,23 @@ export default function App() {
             </div>
           </div>
         </div>
-        <label className="goal">
+        <div className="goal">
           <b>GOAL</b>
           <input
             value={data.goals[p.id] || ""}
             onChange={(e) => goal(e.target.value)}
             placeholder="What do you want to make happen this period?"
           />
-        </label>
+          <CalendarViewControls
+            view={view}
+            rangeStart={rangeStart}
+            rangeEnd={rangeEnd}
+            onViewChange={setView}
+            onRangeStartChange={setRangeStart}
+            onRangeEndChange={setRangeEnd}
+            onToday={jumpToToday}
+          />
+        </div>
         <div className="tools">
           <input
             value={search}
@@ -860,175 +940,33 @@ export default function App() {
           <button onClick={clear}>Clear period</button>
         </div>
         <div className="table-scroll" ref={tableWrap}>
-          <table
-            style={{ width: widths.reduce((sum, value) => sum + value, 0) }}
-          >
-            <colgroup>
-              {widths.map((width, index) => (
-                <col key={index} style={{ width: width + "px" }} />
-              ))}
-            </colgroup>
-            <thead>
-              <tr>
-                <th className="week" rowSpan={2}>
-                  WEEK{resizeHandle(0)}
-                </th>
-                <th colSpan={7} className="date-group">
-                  WEEK AT A GLANCE
-                </th>
-                <th className="plan-head" rowSpan={2}>
-                  SPRINT PLAN{resizeHandle(8)}
-                </th>
-                {columns.map((column, index) => (
-                  <th
-                    key={column.id}
-                    rowSpan={2}
-                    className={column.tone + "-heading tracker-heading"}
-                    style={
-                      { "--tracker-color": column.color } as React.CSSProperties
-                    }
-                  >
-                    {column.label.toUpperCase()}
-                    {resizeHandle(index + 9)}
-                  </th>
-                ))}
-              </tr>
-              <tr className="days">
-                {["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"].map(
-                  (x, index) => (
-                    <th key={x}>
-                      {x}
-                      {resizeHandle(index + 1)}
-                    </th>
-                  ),
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((w, idx) => {
-                const item = data.weeks[wkey(p.id, w.n)] || {};
-                const sprint =
-                  Math.floor((w.n - 1) / sprintLength) * sprintLength + 1;
-                const sprintGroup = Math.floor((w.n - 1) / sprintLength);
-                const prev = visible[idx - 1];
-                const showSprint =
-                  !prev ||
-                  Math.floor((prev.n - 1) / sprintLength) !== sprintGroup;
-                let sprintSpan = 1;
-                while (
-                  idx + sprintSpan < visible.length &&
-                  Math.floor(
-                    (visible[idx + sprintSpan].n - 1) / sprintLength,
-                  ) === sprintGroup
-                )
-                  sprintSpan++;
-                return (
-                  <tr key={w.n} id={"week-" + p.id + "-" + w.n}>
-                    <th
-                      className="week review-cell"
-                      role="button"
-                      tabIndex={0}
-                      aria-label={"Open weekly review for week " + w.n}
-                      title="Open weekly review"
-                      onClick={() =>
-                        setReviewWeek({ periodId: p.id, week: w.n })
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          setReviewWeek({ periodId: p.id, week: w.n });
-                        }
-                      }}
-                    >
-                      W{w.n}
-                      {Object.values(data.reviews[wkey(p.id, w.n)] || {}).some(
-                        (value) => value?.trim(),
-                      ) && (
-                        <i className="review-indicator" aria-hidden="true" />
-                      )}
-                    </th>
-                    {w.days.map((d) => (
-                      <td
-                        key={dkey(d)}
-                        className={
-                          (d.getMonth() < p.start || d.getMonth() > p.end
-                            ? "outside "
-                            : "") +
-                          (dkey(d) === dkey(new Date()) ? "today " : "") +
-                          taskCellMatch(d) +
-                          (data.days[dkey(d)] ? "marked " : "") +
-                          (data.completed[dkey(d)] ? "completed" : "")
-                        }
-                      >
-                        <button onClick={() => setDay(d)}>
-                          {fmt(d)}
-                          {(data.days[dkey(d)] ||
-                            data.tasks[dkey(d)]?.length) && <i />}
-                          {!!data.tasks[dkey(d)]?.length && (
-                            <small className="date-task-count">
-                              {
-                                data.tasks[dkey(d)].filter((task) => task.done)
-                                  .length
-                              }
-                              /{data.tasks[dkey(d)].length} tasks
-                            </small>
-                          )}
-                        </button>
-                      </td>
-                    ))}
-                    {showSprint && (
-                      <td rowSpan={sprintSpan} className="sprint">
-                        <b>
-                          Sprint {sprint}–
-                          {Math.min(sprint + sprintLength - 1, weeks.length)}
-                        </b>
-                        <textarea
-                          value={data.weeks[wkey(p.id, sprint)]?.plan || ""}
-                          onChange={(e) => {
-                            const k = wkey(p.id, sprint);
-                            setData((x) => ({
-                              ...x,
-                              weeks: {
-                                ...x.weeks,
-                                [k]: { ...x.weeks[k], plan: e.target.value },
-                              },
-                            }));
-                          }}
-                          placeholder="Goals, milestones, prep…"
-                        />
-                      </td>
-                    )}
-                    {columns.map((column) => (
-                      <td
-                        key={column.id}
-                        className={"edit " + column.tone + " tracker-cell"}
-                        style={
-                          {
-                            "--tracker-color": column.color,
-                          } as React.CSSProperties
-                        }
-                      >
-                        <textarea
-                          aria-label={"Week " + w.n + " " + column.label}
-                          value={item[column.id] || ""}
-                          onChange={(e) =>
-                            update(w.n, { [column.id]: e.target.value })
-                          }
-                        />
-                      </td>
-                    ))}
-                  </tr>
-                );
-              })}
-              {!visible.length && (
-                <tr>
-                  <td colSpan={9 + columns.length} className="empty">
-                    No matching weeks.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+          <CalendarTable
+            period={p}
+            weeks={weeks}
+            visibleWeeks={visible}
+            data={data}
+            trackers={trackers}
+            sprints={data.sprints}
+            widths={widths}
+            sprintLength={sprintLength}
+            taskCellMatch={taskCellMatch}
+            onDayOpen={setDay}
+            onReviewOpen={(week) => setReviewWeek({ periodId: p.id, week })}
+            onWeekUpdate={update}
+            onSprintUpdate={(week, value) => {
+              const k = wkey(p.id, week);
+              setData((x) => ({
+                ...x,
+                weeks: { ...x.weeks, [k]: { ...x.weeks[k], plan: value } },
+              }));
+            }}
+            resizeHandle={resizeHandle}
+            isDateVisible={(date) =>
+              view !== "range" ||
+              !rangeDates ||
+              (date >= rangeDates.start && date <= rangeDates.end)
+            }
+          />
         </div>
         <label className="goal outcome">
           <b>OUTCOME</b>
@@ -1369,6 +1307,78 @@ export default function App() {
             </button>
             <small>PLANNER CONFIGURATION</small>
             <h2>Sprints & tracker columns</h2>
+            <div className="planner-editors">
+              <h3>Planning cycles</h3>
+              {periods.map((cycle) => (
+                <div className="cycle-editor" key={cycle.id}>
+                  <input
+                    aria-label={cycle.id + " cycle title"}
+                    value={cycle.label}
+                    onChange={(event) =>
+                      updateCycle(cycle, { label: event.target.value })
+                    }
+                  />
+                  <label>
+                    Start
+                    <input
+                      type="date"
+                      value={cycle.startDate || dkey(periodStart(cycle, year))}
+                      onChange={(event) =>
+                        updateCycle(cycle, { startDate: event.target.value })
+                      }
+                    />
+                  </label>
+                  <label>
+                    End
+                    <input
+                      type="date"
+                      value={cycle.endDate || dkey(periodEnd(cycle, year))}
+                      onChange={(event) =>
+                        updateCycle(cycle, { endDate: event.target.value })
+                      }
+                    />
+                  </label>
+                </div>
+              ))}
+              <h3>Sprints in {p.label}</h3>
+              {sprintGroups.map((sprint) => (
+                <div className="sprint-editor" key={sprint.id}>
+                  <b>
+                    Weeks {sprint.startWeek}–{sprint.endWeek}
+                  </b>
+                  <input
+                    aria-label="Sprint title"
+                    placeholder="Sprint title"
+                    value={sprint.definition?.title || ""}
+                    onChange={(event) =>
+                      updateSprint(sprint.id, { title: event.target.value })
+                    }
+                  />
+                  <input
+                    type="date"
+                    aria-label="Sprint start date"
+                    value={
+                      sprint.definition?.startDate ||
+                      dkey(weeks[sprint.startWeek - 1]?.days[0] || new Date())
+                    }
+                    onChange={(event) =>
+                      updateSprint(sprint.id, { startDate: event.target.value })
+                    }
+                  />
+                  <input
+                    type="date"
+                    aria-label="Sprint end date"
+                    value={
+                      sprint.definition?.endDate ||
+                      dkey(weeks[sprint.endWeek - 1]?.days[6] || new Date())
+                    }
+                    onChange={(event) =>
+                      updateSprint(sprint.id, { endDate: event.target.value })
+                    }
+                  />
+                </div>
+              ))}
+            </div>
             <label className="setting-field">
               Weeks per sprint
               <select
@@ -1512,11 +1522,11 @@ export default function App() {
         <div
           className="backdrop"
           onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setDay(null);
+            if (e.target === e.currentTarget) closeDay();
           }}
         >
-          <section className="modal" role="dialog" aria-modal="true">
-            <button className="close" onClick={() => setDay(null)}>
+          <section className="modal daily-modal" role="dialog" aria-modal="true">
+            <button className="close" onClick={closeDay}>
               ×
             </button>
             <small>{p.id} / DAILY NOTE</small>
@@ -1554,8 +1564,17 @@ export default function App() {
             <div className="daily-tasks">
               <div className="daily-tasks-heading">
                 <b>Tasks</b>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewTaskParentId("");
+                    setTaskFormOpen((open) => !open);
+                  }}
+                >
+                  {taskFormOpen ? "Cancel" : "+ Add task"}
+                </button>
               </div>
-              <div className="new-task-form">
+              {taskFormOpen && <div className="new-task-form">
                 <input
                   value={newTaskText}
                   placeholder="Add a task…"
@@ -1565,6 +1584,51 @@ export default function App() {
                     if (e.key === "Enter") addTasksForDay(day);
                   }}
                 />
+                <input
+                  value={newTaskCategory}
+                  placeholder="Category"
+                  aria-label="Task category"
+                  onChange={(e) => setNewTaskCategory(e.target.value)}
+                />
+                <input
+                  type="date"
+                  aria-label="Task start date"
+                  value={newTaskStartDate || dkey(day)}
+                  onChange={(e) => setNewTaskStartDate(e.target.value)}
+                />
+                <input
+                  type="date"
+                  aria-label="Task end date"
+                  value={newTaskEndDate || dkey(day)}
+                  onChange={(e) => setNewTaskEndDate(e.target.value)}
+                />
+                <input
+                  type="time"
+                  aria-label="Task start time"
+                  value={newTaskStartTime}
+                  onChange={(e) => setNewTaskStartTime(e.target.value)}
+                />
+                <input
+                  type="time"
+                  aria-label="Task end time"
+                  value={newTaskEndTime}
+                  onChange={(e) => setNewTaskEndTime(e.target.value)}
+                />
+                <label className="task-field">
+                  Subtask of
+                  <select
+                    aria-label="Subtask parent"
+                    value={newTaskParentId}
+                    onChange={(e) => setNewTaskParentId(e.target.value)}
+                  >
+                    <option value="">Top-level task</option>
+                    {(data.tasks[dkey(day)] || []).map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.text || "Untitled task"}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <select
                   aria-label="New task priority"
                   value={newTaskPriority}
@@ -1594,9 +1658,103 @@ export default function App() {
                 >
                   Add
                 </button>
-              </div>
+              </div>}
               {(data.tasks[dkey(day)] || []).map((task) => (
-                <div className="daily-task" key={task.id}>
+                <TaskItem
+                  key={task.id}
+                  task={task}
+                  expanded={expandedTaskId === task.id}
+                  onToggleExpanded={() =>
+                    setExpandedTaskId((current) =>
+                      current === task.id ? null : task.id,
+                    )
+                  }
+                  onCollapse={() => setExpandedTaskId(null)}
+                  onUpdate={(patch) => {
+                    const key = dkey(day);
+                    setData((current) => ({
+                      ...current,
+                      tasks: {
+                        ...current.tasks,
+                        [key]: current.tasks[key].map((item) =>
+                          item.id === task.id ? { ...item, ...patch } : item,
+                        ),
+                      },
+                    }));
+                  }}
+                  onToggleDone={(done) => {
+                    const key = dkey(day);
+                    setData((current) => ({
+                      ...current,
+                      tasks: {
+                        ...current.tasks,
+                        [key]: current.tasks[key].map((item) =>
+                          item.id === task.id ? { ...item, done } : item,
+                        ),
+                      },
+                    }));
+                  }}
+                  onAddSubtask={() => {
+                    setNewTaskParentId(task.id);
+                    setTaskFormOpen(true);
+                  }}
+                  onRemove={() => {
+                    const key = dkey(day);
+                    setData((current) => ({
+                      ...current,
+                      tasks: {
+                        ...current.tasks,
+                        [key]: current.tasks[key].filter(
+                          (item) => item.id !== task.id,
+                        ),
+                      },
+                    }));
+                    setExpandedTaskId(null);
+                  }}
+                />
+              ))}
+              {false && day && (
+                <>
+              {(data.tasks[dkey(day)] || []).map((task) => (
+                <div
+                  className={
+                    "daily-task" +
+                    (task.parentId ? " subtask-row" : "") +
+                    (expandedTaskId === task.id ? " expanded" : "")
+                  }
+                  key={task.id}
+                  onClick={() => {
+                    if (expandedTaskId !== task.id) setExpandedTaskId(task.id);
+                  }}
+                >
+                  <button
+                    type="button"
+                    className="task-summary"
+                    aria-expanded={expandedTaskId === task.id}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setExpandedTaskId((current) =>
+                        current === task.id ? null : task.id,
+                      );
+                    }}
+                  >
+                    <strong>{task.text || "Untitled task"}</strong>
+                    <small>
+                      {task.category || "Uncategorized"}
+                      {task.startTime
+                        ? " · " + task.startTime + (task.endTime ? "–" + task.endTime : "")
+                        : ""}
+                    </small>
+                  </button>
+                  {expandedTaskId === task.id && (
+                    <button
+                      type="button"
+                      className="collapse-task"
+                      onClick={() => setExpandedTaskId(null)}
+                    >
+                      Hide details
+                    </button>
+                  )}
                   <input
                     type="checkbox"
                     checked={task.done}
@@ -1635,6 +1793,63 @@ export default function App() {
                       }));
                     }}
                   />
+                  <input
+                    value={task.category || ""}
+                    aria-label="Task category"
+                    placeholder="Category"
+                    onChange={(e) => {
+                      const key = dkey(day);
+                      setData((x) => ({
+                        ...x,
+                        tasks: {
+                          ...x.tasks,
+                          [key]: x.tasks[key].map((item) =>
+                            item.id === task.id
+                              ? { ...item, category: e.target.value }
+                              : item,
+                          ),
+                        },
+                      }));
+                    }}
+                  />
+                  <input
+                    type="time"
+                    aria-label="Task start time"
+                    value={task.startTime || ""}
+                    onChange={(e) => {
+                      const key = dkey(day);
+                      setData((x) => ({
+                        ...x,
+                        tasks: {
+                          ...x.tasks,
+                          [key]: x.tasks[key].map((item) =>
+                            item.id === task.id
+                              ? { ...item, startTime: e.target.value }
+                              : item,
+                          ),
+                        },
+                      }));
+                    }}
+                  />
+                  <input
+                    type="time"
+                    aria-label="Task end time"
+                    value={task.endTime || ""}
+                    onChange={(e) => {
+                      const key = dkey(day);
+                      setData((x) => ({
+                        ...x,
+                        tasks: {
+                          ...x.tasks,
+                          [key]: x.tasks[key].map((item) =>
+                            item.id === task.id
+                              ? { ...item, endTime: e.target.value }
+                              : item,
+                          ),
+                        },
+                      }));
+                    }}
+                  />
                   <select
                     aria-label="Task priority"
                     className={
@@ -1665,6 +1880,17 @@ export default function App() {
                   </select>
                   <button
                     type="button"
+                    className="add-subtask"
+                    aria-label={"Add subtask to " + (task.text || "this task")}
+                    onClick={() => {
+                      setNewTaskParentId(task.id);
+                      setTaskFormOpen(true);
+                    }}
+                  >
+                    + Subtask
+                  </button>
+                  <button
+                    type="button"
                     aria-label="Remove task"
                     onClick={() => {
                       const key = dkey(day);
@@ -1688,11 +1914,13 @@ export default function App() {
                   )}
                 </div>
               ))}
+                </>
+              )}
               {!data.tasks[dkey(day)]?.length && (
                 <p className="tasks-empty">No tasks yet.</p>
               )}
             </div>
-            <button className="done" onClick={() => setDay(null)}>
+            <button className="done" onClick={closeDay}>
               Done
             </button>
           </section>

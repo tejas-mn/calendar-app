@@ -677,6 +677,11 @@ body {
   min-width: 0;
   overflow: hidden;
 }
+html[data-theme="dark"],
+html[data-theme="dark"] body,
+html[data-theme="dark"] #root {
+  background: #11151e;
+}
 #root {
   overflow: hidden;
 }
@@ -694,7 +699,7 @@ body {
 }
 .intro {
   flex: 0 0 auto;
-  padding: 18px 0 15px;
+  padding: 12px 0 10px;
 }
 .intro h2 {
   font-size: clamp(25px, 2.7vw, 34px);
@@ -1567,7 +1572,7 @@ td.completed button,
   grid-template-columns: repeat(12, minmax(0, 1fr));
   gap: 7px;
   height: 150px;
-  padding: 12px 6px 0;
+  padding: 12px 6px;
   border-bottom: 1px solid #e7e9ef;
 }
 .month-bar {
